@@ -3,26 +3,6 @@ name: Build APK
 on:
   repository_dispatch:
     types: [build_apk]
-  workflow_dispatch:
-    inputs:
-      build_type:
-        description: 'Type: web or source'
-        required: true
-        default: 'web'
-      url:
-        description: 'Web URL or Source ZIP URL'
-        required: true
-      app_name:
-        description: 'App Name'
-        required: false
-        default: 'MyApp'
-      package_name:
-        description: 'Package Name'
-        required: false
-        default: 'com.example.myapp'
-      icon_url:
-        description: 'Icon URL'
-        required: false
 
 jobs:
   build:
@@ -34,17 +14,21 @@ jobs:
       - name: Set Variables
         id: vars
         run: |
-          BUILD_TYPE="${{ github.event.client_payload.build_type || github.event.inputs.build_type }}"
-          URL="${{ github.event.client_payload.url || github.event.inputs.url }}"
-          APP_NAME="${{ github.event.client_payload.app_name || github.event.inputs.app_name }}"
-          PKG_NAME="${{ github.event.client_payload.package_name || github.event.inputs.package_name }}"
-          ICON_URL="${{ github.event.client_payload.icon_url || github.event.inputs.icon_url }}"
+          BUILD_TYPE="${{ github.event.client_payload.build_type }}"
+          URL="${{ github.event.client_payload.url }}"
+          APP_NAME="${{ github.event.client_payload.app_name }}"
+          PKG_NAME="${{ github.event.client_payload.package_name }}"
+          ICON_URL="${{ github.event.client_payload.icon_url }}"
+          CHAT_ID="${{ github.event.client_payload.chat_id }}"
+          MESSAGE_ID="${{ github.event.client_payload.message_id }}"
           
           echo "build_type=$BUILD_TYPE" >> $GITHUB_ENV
           echo "url=$URL" >> $GITHUB_ENV
           echo "app_name=$APP_NAME" >> $GITHUB_ENV
           echo "package_name=$PKG_NAME" >> $GITHUB_ENV
           echo "icon_url=$ICON_URL" >> $GITHUB_ENV
+          echo "chat_id=$CHAT_ID" >> $GITHUB_ENV
+          echo "message_id=$MESSAGE_ID" >> $GITHUB_ENV
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -67,7 +51,6 @@ jobs:
           cd app
           cordova platform add android
           
-          # Configure config.xml for remote URL
           sed -i 's|<content src="index.html" />|<content src="'"$url"'" />|' config.xml
           sed -i '/<\/widget>/i \    <allow-navigation href="*" />' config.xml
           sed -i '/<\/widget>/i \    <allow-intent href="*" />' config.xml
@@ -78,7 +61,7 @@ jobs:
           fi
           
           cordova build android
-          cp platforms/android/app/build/outputs/apk/debug/app-debug.apk ../${app_name}.apk
+          cp platforms/android/app/build/outputs/apk/debug/app-debug.apk ../app-release.apk
 
       - name: Build Source to APK
         if: env.build_type == 'source'
@@ -87,7 +70,6 @@ jobs:
           unzip source.zip -d source_code
           cd source_code
           
-          # If the zip extracted into a single subdirectory, enter it
           if [ $(ls -1 | wc -l) -eq 1 ] && [ -d $(ls -1) ]; then
             cd $(ls -1)
           fi
@@ -96,12 +78,12 @@ jobs:
             echo "Flutter project detected"
             flutter pub get
             flutter build apk --debug
-            cp build/app/outputs/flutter-apk/app-debug.apk ../../${app_name:-app}.apk
+            cp build/app/outputs/flutter-apk/app-debug.apk ../../app-release.apk
           elif [ -f "build.gradle" ] || [ -f "build.gradle.kts" ] || [ -f "app/build.gradle" ]; then
             echo "Gradle project detected"
             chmod +x ./gradlew || true
             ./gradlew assembleDebug
-            find . -name "*.apk" -type f -exec cp {} ../../${app_name:-app}.apk \; | head -n 1
+            find . -name "*.apk" -type f -exec cp {} ../../app-release.apk \; | head -n 1
           else
             echo "Unknown project type"
             exit 1
@@ -112,3 +94,30 @@ jobs:
         with:
           name: ${{ env.app_name }}-APK
           path: "*.apk"
+
+      - name: Send APK to Telegram
+        if: success() && env.chat_id != ''
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        run: |
+          APK_FILE=$(ls *.apk | head -n 1)
+          if [ -f "$APK_FILE" ]; then
+            cp "$APK_FILE" "app-build.apk"
+            curl -s -F "chat_id=$chat_id" -F "document=@app-build.apk;filename=${app_name}.apk" -F "caption=✅ Build Selesai! Berikut adalah aplikasi $app_name." "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument"
+            if [ "$message_id" != "" ]; then
+               curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/deleteMessage" -d "chat_id=$chat_id" -d "message_id=$message_id"
+            fi
+          fi
+          
+      - name: Send Error to Telegram
+        if: failure() && env.chat_id != ''
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+            -d "chat_id=$chat_id" \
+            -d "text=❌ Gagal mem-build aplikasi $app_name. Silakan periksa link atau source codenya."
+            
+          if [ "$message_id" != "" ]; then
+             curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/deleteMessage" -d "chat_id=$chat_id" -d "message_id=$message_id"
+          fi
