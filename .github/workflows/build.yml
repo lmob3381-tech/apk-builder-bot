@@ -1,0 +1,114 @@
+name: Build APK
+
+on:
+  repository_dispatch:
+    types: [build_apk]
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Type: web or source'
+        required: true
+        default: 'web'
+      url:
+        description: 'Web URL or Source ZIP URL'
+        required: true
+      app_name:
+        description: 'App Name'
+        required: false
+        default: 'MyApp'
+      package_name:
+        description: 'Package Name'
+        required: false
+        default: 'com.example.myapp'
+      icon_url:
+        description: 'Icon URL'
+        required: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v3
+
+      - name: Set Variables
+        id: vars
+        run: |
+          BUILD_TYPE="${{ github.event.client_payload.build_type || github.event.inputs.build_type }}"
+          URL="${{ github.event.client_payload.url || github.event.inputs.url }}"
+          APP_NAME="${{ github.event.client_payload.app_name || github.event.inputs.app_name }}"
+          PKG_NAME="${{ github.event.client_payload.package_name || github.event.inputs.package_name }}"
+          ICON_URL="${{ github.event.client_payload.icon_url || github.event.inputs.icon_url }}"
+          
+          echo "build_type=$BUILD_TYPE" >> $GITHUB_ENV
+          echo "url=$URL" >> $GITHUB_ENV
+          echo "app_name=$APP_NAME" >> $GITHUB_ENV
+          echo "package_name=$PKG_NAME" >> $GITHUB_ENV
+          echo "icon_url=$ICON_URL" >> $GITHUB_ENV
+
+      - name: Setup Java
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Flutter
+        if: env.build_type == 'source'
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.x'
+          channel: 'stable'
+
+      - name: Build Web to APK (Cordova)
+        if: env.build_type == 'web'
+        run: |
+          npm install -g cordova
+          cordova create app "$package_name" "$app_name"
+          cd app
+          cordova platform add android
+          
+          # Configure config.xml for remote URL
+          sed -i 's|<content src="index.html" />|<content src="'"$url"'" />|' config.xml
+          sed -i '/<\/widget>/i \    <allow-navigation href="*" />' config.xml
+          sed -i '/<\/widget>/i \    <allow-intent href="*" />' config.xml
+          
+          if [ "$icon_url" != "" ] && [ "$icon_url" != "skip" ]; then
+            wget -O icon.png "$icon_url"
+            sed -i '/<\/widget>/i \    <icon src="icon.png" />' config.xml
+          fi
+          
+          cordova build android
+          cp platforms/android/app/build/outputs/apk/debug/app-debug.apk ../${app_name}.apk
+
+      - name: Build Source to APK
+        if: env.build_type == 'source'
+        run: |
+          wget -O source.zip "$url"
+          unzip source.zip -d source_code
+          cd source_code
+          
+          # If the zip extracted into a single subdirectory, enter it
+          if [ $(ls -1 | wc -l) -eq 1 ] && [ -d $(ls -1) ]; then
+            cd $(ls -1)
+          fi
+          
+          if [ -f "pubspec.yaml" ]; then
+            echo "Flutter project detected"
+            flutter pub get
+            flutter build apk --debug
+            cp build/app/outputs/flutter-apk/app-debug.apk ../../${app_name:-app}.apk
+          elif [ -f "build.gradle" ] || [ -f "build.gradle.kts" ] || [ -f "app/build.gradle" ]; then
+            echo "Gradle project detected"
+            chmod +x ./gradlew || true
+            ./gradlew assembleDebug
+            find . -name "*.apk" -type f -exec cp {} ../../${app_name:-app}.apk \; | head -n 1
+          else
+            echo "Unknown project type"
+            exit 1
+          fi
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ env.app_name }}-APK
+          path: "*.apk"
