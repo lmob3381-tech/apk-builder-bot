@@ -70,13 +70,14 @@ jobs:
                 "storePassword": "password123",
                 "alias": "app-alias",
                 "password" : "password123",
-                "keystoreType": ""
+                "keystoreType": "",
+                "packageType": "apk"
               }
             }
           }
           EOF2
           
-          cordova build android --release --buildConfig=build.json
+          cordova build android --release --apk --buildConfig=build.json
           cp platforms/android/app/build/outputs/apk/release/app-release.apk ../app-release.apk
 
       - name: Build Source to APK
