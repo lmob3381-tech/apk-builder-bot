@@ -56,7 +56,9 @@ jobs:
           sed -i '/<\/widget>/i \    <allow-intent href="*" />' config.xml
           
           if [ "$icon_url" != "" ] && [ "$icon_url" != "skip" ]; then
-            wget -O icon.png "$icon_url"
+            wget -O temp_icon "$icon_url"
+            sudo apt-get update && sudo apt-get install -y imagemagick
+            convert temp_icon -resize 512x512 icon.png || cp temp_icon icon.png
             sed -i '/<\/widget>/i \    <icon src="icon.png" />' config.xml
           fi
           
